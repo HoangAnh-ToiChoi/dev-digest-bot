@@ -3,8 +3,10 @@
 Biến môi trường:
   TELEGRAM_TOKEN, TELEGRAM_CHAT_ID  bắt buộc (trừ khi DRY_RUN=1)
   GITHUB_TOKEN                      nên có: tăng giới hạn GitHub API (Actions tự cấp)
-  ANTHROPIC_API_KEY                 tuỳ chọn: tóm tắt từng tin bằng tiếng Việt
-  CLAUDE_MODEL                      tuỳ chọn: model dùng để tóm tắt
+  GEMINI_API_KEY                    tuỳ chọn (miễn phí): tóm tắt "Là gì / Vì sao hot" bằng Gemini
+  GEMINI_MODEL                      tuỳ chọn: mặc định gemini-flash-latest
+  ANTHROPIC_API_KEY                 tuỳ chọn (trả phí): tóm tắt bằng Claude nếu không có GEMINI_API_KEY
+  CLAUDE_MODEL                      tuỳ chọn: model Claude dùng để tóm tắt
   DRY_RUN=1                         in tin ra màn hình, không gửi, không lưu state
 """
 
@@ -274,7 +276,7 @@ def save_state(state):
 def collect(sent):
     """Lấy tin từng mục; mục nào thiếu bài thì mở rộng từ 24h lên 48h."""
     picked, errors, seen = {}, [], set(sent)
-    spare = 2 if os.environ.get("ANTHROPIC_API_KEY") else 0
+    spare = 2 if summarizer_enabled() else 0
     for key, _title, limit in SECTIONS:
         limit += spare  # lấy dư để bù tin Claude loại vì không liên quan
         chosen = []
@@ -352,20 +354,61 @@ Với mỗi tin bên dưới, trả về:
 Quy tắc: chỉ dùng thông tin trong tiêu đề và phần "Thông tin"; không bịa số liệu. Nếu thiếu dữ kiện để nói vì sao hot, viết "Chưa rõ, xem link để biết thêm". Giữ nguyên tên riêng, tên model, tên repo. Viết tự nhiên, không sáo rỗng."""
 
 
-def summarize(picked):
-    """Thêm "Là gì" / "Vì sao đáng chú ý" cho mỗi tin. Lỗi thì bỏ qua, digest vẫn gửi."""
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        return
+GEMINI_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "items": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "id": {"type": "INTEGER"},
+                    "what": {"type": "STRING"},
+                    "why": {"type": "STRING"},
+                    "keep": {"type": "BOOLEAN"},
+                },
+                "required": ["id", "what", "why", "keep"],
+            },
+        }
+    },
+    "required": ["items"],
+}
+
+
+def summarizer_enabled():
+    return bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("ANTHROPIC_API_KEY"))
+
+
+def ask_gemini(prompt):
+    """Gemini (gói miễn phí của Google AI Studio). Trả về chuỗi JSON hoặc None nếu lỗi."""
+    model = os.environ.get("GEMINI_MODEL") or "gemini-flash-latest"
+    try:
+        r = requests.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+            headers={"x-goog-api-key": os.environ["GEMINI_API_KEY"], **UA},
+            json={
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"responseMimeType": "application/json", "responseSchema": GEMINI_SCHEMA},
+            },
+            timeout=180,
+        )
+    except requests.RequestException as e:
+        print(f"Bỏ qua tóm tắt: không kết nối được Gemini ({e.__class__.__name__})", file=sys.stderr)
+        return None
+    if not r.ok:
+        print(f"Bỏ qua tóm tắt: Gemini lỗi {r.status_code}: {r.text[:300]}", file=sys.stderr)
+        return None
+    candidates = r.json().get("candidates") or []
+    if not candidates or candidates[0].get("finishReason") != "STOP":
+        print(f"Bỏ qua tóm tắt: Gemini không trả kết quả đầy đủ ({candidates[:1]})", file=sys.stderr)
+        return None
+    return "".join(part.get("text", "") for part in candidates[0]["content"]["parts"])
+
+
+def ask_claude(prompt):
+    """Claude API (trả phí). Trả về chuỗi JSON hoặc None nếu lỗi."""
     import anthropic
 
-    flat = [it for items in picked.values() for it in items]
-    if not flat:
-        return
-    add_readmes(flat)
-    listing = "\n\n".join(
-        f"[{i}] ({it['source']}) {it['title']}\nLink: {it['url']}\nThông tin: {it['context'] or 'không có'}"
-        for i, it in enumerate(flat)
-    )
     client = anthropic.Anthropic()
     try:
         response = client.beta.messages.create(
@@ -374,19 +417,43 @@ def summarize(picked):
             betas=["server-side-fallback-2026-07-01"],
             fallbacks="default",
             output_config={"effort": "low", "format": {"type": "json_schema", "schema": SUMMARY_SCHEMA}},
-            messages=[{"role": "user", "content": SUMMARY_PROMPT + "\n\n" + listing}],
+            messages=[{"role": "user", "content": prompt}],
         )
     except anthropic.APIStatusError as e:
         print(f"Bỏ qua tóm tắt: Claude API lỗi {e.status_code}", file=sys.stderr)
-        return
+        return None
     except anthropic.APIConnectionError:
         print("Bỏ qua tóm tắt: không kết nối được Claude API", file=sys.stderr)
-        return
+        return None
     if response.stop_reason != "end_turn":
         print(f"Bỏ qua tóm tắt: stop_reason={response.stop_reason}", file=sys.stderr)
+        return None
+    return next(b.text for b in response.content if b.type == "text")
+
+
+def summarize(picked):
+    """Thêm "Là gì" / "Vì sao hot" cho mỗi tin. Ưu tiên Gemini (miễn phí), sau đó Claude.
+    Lỗi thì bỏ qua, digest vẫn gửi."""
+    if not summarizer_enabled():
         return
-    text = next(b.text for b in response.content if b.type == "text")
-    for s in json.loads(text)["items"]:
+    flat = [it for items in picked.values() for it in items]
+    if not flat:
+        return
+    add_readmes(flat)
+    listing = "\n\n".join(
+        f"[{i}] ({it['source']}) {it['title']}\nLink: {it['url']}\nThông tin: {it['context'] or 'không có'}"
+        for i, it in enumerate(flat)
+    )
+    prompt = SUMMARY_PROMPT + "\n\n" + listing
+    text = ask_gemini(prompt) if os.environ.get("GEMINI_API_KEY") else ask_claude(prompt)
+    if not text:
+        return
+    try:
+        results = json.loads(text)["items"]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        print("Bỏ qua tóm tắt: kết quả không phải JSON hợp lệ", file=sys.stderr)
+        return
+    for s in results:
         if 0 <= s["id"] < len(flat):
             flat[s["id"]].update(what=s["what"].strip(), why=s["why"].strip(), keep=s["keep"])
 

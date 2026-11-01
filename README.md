@@ -38,21 +38,29 @@ Mỗi tin có link bấm vào là tới thẳng trang gốc.
 
 Không cần key GitHub, vì GitHub Actions tự cấp `GITHUB_TOKEN`.
 
-## Tóm tắt "Là gì / Vì sao hot" bằng Claude (không bắt buộc)
+## Tóm tắt "Là gì / Vì sao hot" (không bắt buộc)
 
-Khi có secret `ANTHROPIC_API_KEY`, dưới mỗi tin sẽ có thêm 2 dòng:
+Dưới mỗi tin sẽ có thêm 2 dòng giải thích:
 
 ```
-• deepseek-ai/dsh-superagent-prototype – Towards a More Autonomous Agent System (⭐ 5,861)
-   📝 Là gì: ...
-   🔥 Vì sao hot: ...
+• deepseek-ai/dsh-superagent-prototype – Towards a More Autonomous Agent System (⭐ 5,898)
+   📝 Là gì: Bản thử nghiệm hệ thống AI agent tự chủ cao hơn do deepseek-ai phát triển.
+   🔥 Vì sao hot: Đến từ deepseek-ai và đạt gần 5.900 sao chỉ sau ít ngày ra mắt.
 ```
 
-- Bot gửi cho Claude cả README của repo, model card trên Hugging Face, ghi chú phát hành và đoạn trích bài viết, nên phần tóm tắt dựa trên nội dung thật chứ không chỉ dựa vào tiêu đề.
-- Claude cũng loại các tin không liên quan tới IT/AI. Ví dụ: chuyện nông nghiệp trên Hacker News, hoặc bản đóng gói lại của model có sẵn. Mỗi mục lấy dư 2 tin để bù cho tin bị loại.
-- Model mặc định là `claude-opus-5-5`, ở mức effort `low`, tốn khoảng 0,1 USD mỗi ngày. Muốn rẻ hơn nhiều, vào **Settings → Secrets and variables → Actions → Variables** và đặt `CLAUDE_MODEL` = `claude-haiku-5-5`, chưa tới 0,01 USD mỗi ngày.
-- Nếu Claude lỗi, bot vẫn gửi tin như bình thường, chỉ không có tóm tắt.
-- Tin trên Hacker News chỉ có tiêu đề và số điểm, nên phần "vì sao" của mục này có thể ngắn hơn các mục khác.
+Bạn chọn **một** trong hai cách sau:
+
+| Secret | Chi phí | Ghi chú |
+|---|---|---|
+| `GEMINI_API_KEY` | **Miễn phí** (gói free của Google AI Studio) | Lấy key tại https://aistudio.google.com/apikey. Model mặc định là `gemini-flash-latest`, đổi được bằng biến `GEMINI_MODEL`. |
+| `ANTHROPIC_API_KEY` | Trả phí: Opus 5.5 khoảng 0,1 USD/ngày, Haiku 5.5 dưới 0,01 USD/ngày | Model mặc định là `claude-opus-5-5`, đổi được bằng biến `CLAUDE_MODEL`, ví dụ `claude-haiku-5-5`. |
+
+Nếu có cả hai secret, bot dùng Gemini.
+
+- Bot gửi kèm README của repo, model card trên Hugging Face, ghi chú phát hành và đoạn trích bài viết, nên phần tóm tắt dựa trên nội dung thật chứ không chỉ dựa vào tiêu đề.
+- AI cũng loại các tin không liên quan tới IT/AI. Mỗi mục lấy dư 2 tin để bù cho tin bị loại.
+- Nếu phần tóm tắt lỗi, bot vẫn gửi tin bình thường, chỉ không có 2 dòng giải thích.
+- Gói free của Gemini có thể dùng dữ liệu gửi lên để cải thiện model. Bot chỉ gửi tin công khai nên không sao.
 
 ## Chạy thử trên máy
 
