@@ -379,34 +379,54 @@ def summarizer_enabled():
     return bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("ANTHROPIC_API_KEY"))
 
 
+GEMINI_FALLBACK_MODELS = ["gemini-flash-latest", "gemini-flash-lite-latest", "gemini-3.1-flash-lite"]
+
+
 def ask_gemini(prompt):
-    """Gemini (gói miễn phí của Google AI Studio). Trả về chuỗi JSON hoặc None nếu lỗi."""
-    model = os.environ.get("GEMINI_MODEL") or "gemini-flash-latest"
-    try:
-        r = requests.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-            headers={"x-goog-api-key": os.environ["GEMINI_API_KEY"], **UA},
-            json={
-                "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"responseMimeType": "application/json", "responseSchema": GEMINI_SCHEMA},
-            },
-            timeout=180,
-        )
-    except requests.RequestException as e:
-        print(f"Bỏ qua tóm tắt: không kết nối được Gemini ({e.__class__.__name__})", file=sys.stderr)
-        return None
-    if not r.ok:
-        print(f"Bỏ qua tóm tắt: Gemini lỗi {r.status_code}: {r.text[:300]}", file=sys.stderr)
-        return None
-    candidates = r.json().get("candidates") or []
-    if not candidates or candidates[0].get("finishReason") != "STOP":
-        print(f"Bỏ qua tóm tắt: Gemini không trả kết quả đầy đủ ({candidates[:1]})", file=sys.stderr)
-        return None
-    return "".join(part.get("text", "") for part in candidates[0]["content"]["parts"])
+    """Gemini (gói miễn phí của Google AI Studio). Trả về (chuỗi JSON, None) hoặc (None, lý do lỗi).
+
+    Gói free hay bị quá tải (503) hoặc giới hạn (429), nên thử lại vài lần rồi chuyển model khác.
+    """
+    models = [os.environ.get("GEMINI_MODEL")] if os.environ.get("GEMINI_MODEL") else []
+    models += [m for m in GEMINI_FALLBACK_MODELS if m not in models]
+    reason = "không rõ"
+    for model in models:
+        for wait in (0, 10, 30):
+            time.sleep(wait)
+            try:
+                r = requests.post(
+                    f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                    headers={"x-goog-api-key": os.environ["GEMINI_API_KEY"], **UA},
+                    json={
+                        "contents": [{"parts": [{"text": prompt}]}],
+                        "generationConfig": {"responseMimeType": "application/json",
+                                             "responseSchema": GEMINI_SCHEMA},
+                    },
+                    timeout=180,
+                )
+            except requests.RequestException as e:
+                reason = f"không kết nối được ({e.__class__.__name__})"
+                continue
+            if r.status_code in (429, 500, 503):
+                reason = f"Gemini quá tải/giới hạn ({r.status_code})"
+                print(f"{model}: lỗi {r.status_code}, thử lại", file=sys.stderr)
+                continue
+            if not r.ok:
+                reason = f"Gemini lỗi {r.status_code}"
+                print(f"{model}: lỗi {r.status_code}: {r.text[:300]}", file=sys.stderr)
+                break  # lỗi khác (key sai, model không tồn tại...): thử model tiếp theo
+            candidates = r.json().get("candidates") or []
+            if not candidates or candidates[0].get("finishReason") != "STOP":
+                reason = "Gemini trả kết quả không đầy đủ"
+                print(f"{model}: {candidates[:1]}", file=sys.stderr)
+                break
+            print(f"Tóm tắt bằng {model}", file=sys.stderr)
+            return "".join(part.get("text", "") for part in candidates[0]["content"]["parts"]), None
+    return None, reason
 
 
 def ask_claude(prompt):
-    """Claude API (trả phí). Trả về chuỗi JSON hoặc None nếu lỗi."""
+    """Claude API (trả phí). Trả về (chuỗi JSON, None) hoặc (None, lý do lỗi)."""
     import anthropic
 
     client = anthropic.Anthropic()
@@ -420,20 +440,17 @@ def ask_claude(prompt):
             messages=[{"role": "user", "content": prompt}],
         )
     except anthropic.APIStatusError as e:
-        print(f"Bỏ qua tóm tắt: Claude API lỗi {e.status_code}", file=sys.stderr)
-        return None
+        return None, f"Claude API lỗi {e.status_code}"
     except anthropic.APIConnectionError:
-        print("Bỏ qua tóm tắt: không kết nối được Claude API", file=sys.stderr)
-        return None
+        return None, "không kết nối được Claude API"
     if response.stop_reason != "end_turn":
-        print(f"Bỏ qua tóm tắt: stop_reason={response.stop_reason}", file=sys.stderr)
-        return None
-    return next(b.text for b in response.content if b.type == "text")
+        return None, f"Claude dừng giữa chừng ({response.stop_reason})"
+    return next(b.text for b in response.content if b.type == "text"), None
 
 
 def summarize(picked):
     """Thêm "Là gì" / "Vì sao hot" cho mỗi tin. Ưu tiên Gemini (miễn phí), sau đó Claude.
-    Lỗi thì bỏ qua, digest vẫn gửi."""
+    Lỗi thì trả về lý do (hiện ở cuối bản tin), digest vẫn gửi."""
     if not summarizer_enabled():
         return
     flat = [it for items in picked.values() for it in items]
@@ -445,17 +462,17 @@ def summarize(picked):
         for i, it in enumerate(flat)
     )
     prompt = SUMMARY_PROMPT + "\n\n" + listing
-    text = ask_gemini(prompt) if os.environ.get("GEMINI_API_KEY") else ask_claude(prompt)
+    text, reason = ask_gemini(prompt) if os.environ.get("GEMINI_API_KEY") else ask_claude(prompt)
     if not text:
-        return
+        return f"tóm tắt AI: {reason}"
     try:
         results = json.loads(text)["items"]
     except (json.JSONDecodeError, KeyError, TypeError):
-        print("Bỏ qua tóm tắt: kết quả không phải JSON hợp lệ", file=sys.stderr)
-        return
+        return "tóm tắt AI: kết quả không phải JSON hợp lệ"
     for s in results:
         if 0 <= s["id"] < len(flat):
             flat[s["id"]].update(what=s["what"].strip(), why=s["why"].strip(), keep=s["keep"])
+    return None
 
 
 def render(picked, errors):
@@ -511,7 +528,9 @@ def send(text):
 def main():
     state = load_state()
     picked, errors = collect(state)
-    summarize(picked)
+    summary_error = summarize(picked)
+    if summary_error:
+        errors.append(summary_error)
     for c in chunk(render(picked, errors)):
         print(c) if DRY_RUN else send(c)
     if not DRY_RUN:

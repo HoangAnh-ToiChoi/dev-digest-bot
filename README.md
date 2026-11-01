@@ -59,7 +59,8 @@ Nếu có cả hai secret, bot dùng Gemini.
 
 - Bot gửi kèm README của repo, model card trên Hugging Face, ghi chú phát hành và đoạn trích bài viết, nên phần tóm tắt dựa trên nội dung thật chứ không chỉ dựa vào tiêu đề.
 - AI cũng loại các tin không liên quan tới IT/AI. Mỗi mục lấy dư 2 tin để bù cho tin bị loại.
-- Nếu phần tóm tắt lỗi, bot vẫn gửi tin bình thường, chỉ không có 2 dòng giải thích.
+- Gói free của Gemini hay bị quá tải (lỗi 503). Khi đó bot tự thử lại, rồi chuyển sang model Gemini khác (flash → flash-lite).
+- Nếu vẫn lỗi, bot vẫn gửi tin bình thường, chỉ không có 2 dòng giải thích, và ghi lý do ở dòng ⚠️ cuối bản tin.
 - Gói free của Gemini có thể dùng dữ liệu gửi lên để cải thiện model. Bot chỉ gửi tin công khai nên không sao.
 
 ## Chạy thử trên máy
