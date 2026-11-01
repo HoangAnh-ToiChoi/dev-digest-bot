@@ -38,11 +38,21 @@ Mỗi tin có link bấm vào là tới thẳng trang gốc.
 
 Không cần key GitHub, vì GitHub Actions tự cấp `GITHUB_TOKEN`.
 
-## Tóm tắt tiếng Việt bằng Claude (không bắt buộc)
+## Tóm tắt "Là gì / Vì sao hot" bằng Claude (không bắt buộc)
 
-- Khi có secret `ANTHROPIC_API_KEY`, mỗi tin sẽ có thêm một dòng `↳` tóm tắt bằng tiếng Việt.
-- Model mặc định là `claude-opus-5-5`, chạy ở mức effort `low`. Muốn rẻ hơn, vào **Settings → Secrets and variables → Actions → Variables** và đặt `CLAUDE_MODEL` = `claude-haiku-5-5`.
-- Nếu Claude lỗi, bot bỏ qua phần tóm tắt và vẫn gửi tin bình thường.
+Khi có secret `ANTHROPIC_API_KEY`, dưới mỗi tin sẽ có thêm 2 dòng:
+
+```
+• deepseek-ai/dsh-superagent-prototype – Towards a More Autonomous Agent System (⭐ 5,861)
+   📝 Là gì: ...
+   🔥 Vì sao đáng chú ý: ...
+```
+
+- Bot gửi cho Claude cả README của repo, model card trên Hugging Face, ghi chú phát hành và đoạn trích bài viết, nên phần tóm tắt dựa trên nội dung thật chứ không chỉ dựa vào tiêu đề.
+- Claude cũng loại các tin không liên quan tới IT/AI. Ví dụ: chuyện nông nghiệp trên Hacker News, hoặc bản đóng gói lại của model có sẵn. Mỗi mục lấy dư 2 tin để bù cho tin bị loại.
+- Model mặc định là `claude-opus-5-5`, ở mức effort `low`, tốn khoảng 0,1 USD mỗi ngày. Muốn rẻ hơn nhiều, vào **Settings → Secrets and variables → Actions → Variables** và đặt `CLAUDE_MODEL` = `claude-haiku-5-5`, chưa tới 0,01 USD mỗi ngày.
+- Nếu Claude lỗi, bot vẫn gửi tin như bình thường, chỉ không có tóm tắt.
+- Tin trên Hacker News chỉ có tiêu đề và số điểm, nên phần "vì sao" của mục này có thể ngắn hơn các mục khác.
 
 ## Chạy thử trên máy
 

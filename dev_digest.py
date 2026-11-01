@@ -87,8 +87,17 @@ def clean_url(url):
     return urlunsplit(parts._replace(query=urlencode(query), fragment=""))
 
 
-def item(title, url, source, note=""):
-    return {"title": title.strip(), "url": clean_url(url), "source": source, "note": note}
+def item(title, url, source, note="", context="", ref=None):
+    # context: thông tin thêm cho Claude tóm tắt; ref: ("repo"|"hf", tên) để tải README khi cần
+    return {"title": title.strip(), "url": clean_url(url), "source": source, "note": note,
+            "context": context, "ref": ref}
+
+
+def plain_text(text, limit=1500):
+    """Bỏ thẻ HTML/markdown rườm rà (ảnh, badge) để gửi cho Claude gọn hơn."""
+    text = re.sub(r"<[^>]+>|!\[[^\]]*\]\([^)]*\)|\[!\[.*?\]\(.*?\)\]\(.*?\)", " ", text or "")
+    text = re.sub(r"\s+", " ", html.unescape(text)).strip()
+    return text[:limit]
 
 
 def gh_get(path, **params):
@@ -115,8 +124,11 @@ def search_repos(query, source):
             continue
         desc = (r.get("description") or "").strip()
         note = f"⭐ {r['stargazers_count']:,}" + (f" · {r['language']}" if r.get("language") else "")
+        owner = "tổ chức" if r["owner"].get("type") == "Organization" else "cá nhân"
+        context = (f"Repo GitHub của {owner} {r['owner']['login']}, tạo ngày {r['created_at'][:10]}, "
+                   f"{r['stargazers_count']} sao, {r['forks_count']} fork. Mô tả: {desc}")
         out.append(item(f"{r['full_name']} – {desc[:100]}{'…' if len(desc) > 100 else ''}" if desc else r["full_name"],
-                        r["html_url"], source, note))
+                        r["html_url"], source, note, context, ("repo", r["full_name"])))
     return out
 
 
@@ -147,7 +159,8 @@ def fetch_feeds(feeds, words, hours):
             if not ts or ts < NOW - hours * 3600 or not e.get("link"):
                 continue
             if words.search(f"{e.get('title', '')} {e.get('summary', '')}"):
-                out.append(item(e.get("title", e.link), e.link, source))
+                out.append(item(e.get("title", e.link), e.link, source,
+                                context=plain_text(e.get("summary", ""))))
     if errors and not out:
         raise RuntimeError(", ".join(errors))
     return out, errors
@@ -165,7 +178,10 @@ def fetch_hf_models(hours):
         if not created or datetime.fromisoformat(created.replace("Z", "+00:00")) < cutoff:
             continue
         note = f"❤️ {m.get('likes', 0):,}" if m.get("likes") else ""
-        out.append(item(m["id"], f"https://huggingface.co/{m['id']}", "Hugging Face", note))
+        context = (f"Model trên Hugging Face, tạo ngày {created[:10]}, {m.get('likes', 0)} likes, "
+                   f"{m.get('downloads', 0)} lượt tải, loại: {m.get('pipeline_tag') or 'không rõ'}")
+        out.append(item(m["id"], f"https://huggingface.co/{m['id']}", "Hugging Face", note,
+                        context, ("hf", m["id"])))
     return out
 
 
@@ -208,7 +224,8 @@ def fetch_frameworks(hours):
             ts = datetime.fromisoformat(rel["published_at"].replace("Z", "+00:00")).timestamp()
             if ts < NOW - hours * 3600 or not is_minor_or_major(rel["tag_name"]):
                 continue
-            out.append(item(f"{repo} {rel['tag_name']}", rel["html_url"], "GitHub Releases"))
+            out.append(item(f"{repo} {rel['tag_name']}", rel["html_url"], "GitHub Releases",
+                            context="Ghi chú phát hành: " + plain_text(rel.get("body"))))
     if errors and not out and len(errors) == len(WATCH_REPOS):
         raise RuntimeError("GitHub Releases: " + ", ".join(errors[:3]))
     return out, errors
@@ -225,7 +242,8 @@ def fetch_industry(hours):
     out = []
     for h in hits:
         url = h.get("url") or f"https://news.ycombinator.com/item?id={h['objectID']}"
-        out.append(item(h["title"], url, "Hacker News", f"▲ {h['points']}"))
+        context = f"{h['points']} điểm, {h.get('num_comments', 0)} bình luận trên Hacker News. " + plain_text(h.get("story_text"))
+        out.append(item(h["title"], url, "Hacker News", f"▲ {h['points']}", context))
     return out
 
 
@@ -256,7 +274,9 @@ def save_state(state):
 def collect(sent):
     """Lấy tin từng mục; mục nào thiếu bài thì mở rộng từ 24h lên 48h."""
     picked, errors, seen = {}, [], set(sent)
+    spare = 2 if os.environ.get("ANTHROPIC_API_KEY") else 0
     for key, _title, limit in SECTIONS:
+        limit += spare  # lấy dư để bù tin Claude loại vì không liên quan
         chosen = []
         for hours in (24, 48):
             try:
@@ -281,8 +301,59 @@ def collect(sent):
     return picked, errors
 
 
+def add_readmes(items):
+    """Tải README của repo / model card để Claude hiểu repo đó thật sự làm gì."""
+    for it in items:
+        if not it.get("ref"):
+            continue
+        kind, name = it["ref"]
+        try:
+            if kind == "repo":
+                headers = {"Accept": "application/vnd.github.raw", **UA}
+                if os.environ.get("GITHUB_TOKEN"):
+                    headers["Authorization"] = f"Bearer {os.environ['GITHUB_TOKEN']}"
+                r = requests.get(f"https://api.github.com/repos/{name}/readme", headers=headers, timeout=30)
+            else:
+                r = requests.get(f"https://huggingface.co/{name}/raw/main/README.md", headers=UA, timeout=30)
+            if r.ok:
+                it["context"] += " README: " + plain_text(r.text, 2000)
+        except requests.RequestException:
+            pass
+
+
+SUMMARY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "items": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "integer"},
+                    "what": {"type": "string"},
+                    "why": {"type": "string"},
+                    "keep": {"type": "boolean"},
+                },
+                "required": ["id", "what", "why", "keep"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["items"],
+    "additionalProperties": False,
+}
+
+SUMMARY_PROMPT = """Bạn viết bản tin sáng cho một lập trình viên Việt Nam (stack: React, Node/Express, Supabase, có dùng AI).
+Với mỗi tin bên dưới, trả về:
+- what: "Là gì" – 1 câu tiếng Việt dễ hiểu (tối đa 30 từ), giải thích cho người chưa từng nghe tên nó.
+- why: "Vì sao đáng chú ý" – 1 câu (tối đa 30 từ): vì sao nó hot hoặc dev nên quan tâm, dựa vào dữ kiện có sẵn (ai làm ra, tăng bao nhiêu sao trong mấy ngày, tính năng mới, ứng dụng thực tế...).
+- keep: false nếu tin rõ ràng không liên quan tới phần mềm/IT/AI (ví dụ chuyện nông nghiệp, đời sống), hoặc chỉ là bản đóng gói lại/không kiểm duyệt của model có sẵn mà không có gì mới; ngược lại true.
+
+Quy tắc: chỉ dùng thông tin trong tiêu đề và phần "Thông tin"; không bịa số liệu. Nếu thiếu dữ kiện để nói vì sao hot, viết "Chưa rõ, xem link để biết thêm". Giữ nguyên tên riêng, tên model, tên repo. Viết tự nhiên, không sáo rỗng."""
+
+
 def summarize(picked):
-    """Tóm tắt 1 câu tiếng Việt cho mỗi tin. Lỗi thì bỏ qua, digest vẫn gửi."""
+    """Thêm "Là gì" / "Vì sao đáng chú ý" cho mỗi tin. Lỗi thì bỏ qua, digest vẫn gửi."""
     if not os.environ.get("ANTHROPIC_API_KEY"):
         return
     import anthropic
@@ -290,7 +361,11 @@ def summarize(picked):
     flat = [it for items in picked.values() for it in items]
     if not flat:
         return
-    listing = "\n".join(f"{i}. [{it['source']}] {it['title']} ({it['url']})" for i, it in enumerate(flat))
+    add_readmes(flat)
+    listing = "\n\n".join(
+        f"[{i}] ({it['source']}) {it['title']}\nLink: {it['url']}\nThông tin: {it['context'] or 'không có'}"
+        for i, it in enumerate(flat)
+    )
     client = anthropic.Anthropic()
     try:
         response = client.beta.messages.create(
@@ -298,40 +373,8 @@ def summarize(picked):
             max_tokens=16000,
             betas=["server-side-fallback-2026-07-01"],
             fallbacks="default",
-            output_config={
-                "effort": "low",
-                "format": {
-                    "type": "json_schema",
-                    "schema": {
-                        "type": "object",
-                        "properties": {
-                            "items": {
-                                "type": "array",
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "id": {"type": "integer"},
-                                        "summary": {"type": "string"},
-                                    },
-                                    "required": ["id", "summary"],
-                                    "additionalProperties": False,
-                                },
-                            }
-                        },
-                        "required": ["items"],
-                        "additionalProperties": False,
-                    },
-                },
-            },
-            messages=[{
-                "role": "user",
-                "content": (
-                    "Bạn viết bản tin sáng cho một lập trình viên Việt Nam. Với mỗi tin dưới đây, "
-                    "viết đúng 1 câu tiếng Việt (tối đa 25 từ) nói nó là gì và vì sao dev nên quan tâm. "
-                    "Chỉ dựa vào tiêu đề và nguồn; nếu không chắc thì mô tả đúng những gì tiêu đề nói, "
-                    "không bịa thêm số liệu. Giữ nguyên tên riêng, tên model, tên repo.\n\n" + listing
-                ),
-            }],
+            output_config={"effort": "low", "format": {"type": "json_schema", "schema": SUMMARY_SCHEMA}},
+            messages=[{"role": "user", "content": SUMMARY_PROMPT + "\n\n" + listing}],
         )
     except anthropic.APIStatusError as e:
         print(f"Bỏ qua tóm tắt: Claude API lỗi {e.status_code}", file=sys.stderr)
@@ -345,24 +388,27 @@ def summarize(picked):
     text = next(b.text for b in response.content if b.type == "text")
     for s in json.loads(text)["items"]:
         if 0 <= s["id"] < len(flat):
-            flat[s["id"]]["summary"] = s["summary"].strip()
+            flat[s["id"]].update(what=s["what"].strip(), why=s["why"].strip(), keep=s["keep"])
 
 
 def render(picked, errors):
     today = datetime.now(VN_TZ)
     lines = [f"🤖 <b>Dev Digest – {today:%d/%m}</b>"]
     total = 0
-    for key, title, _limit in SECTIONS:
-        items = picked.get(key) or []
+    for key, title, limit in SECTIONS:
+        items = [it for it in picked.get(key) or [] if it.get("keep", True)][:limit]
         lines.append(f"\n<b>{title}</b>")
         if not items:
             lines.append("<i>Không có tin mới.</i>")
         for it in items:
             total += 1
+            it["shown"] = True
             meta = " · ".join(x for x in (it["note"], it["source"]) if x)
             lines.append(f'• <a href="{html.escape(it["url"])}">{html.escape(it["title"])}</a> <i>({html.escape(meta)})</i>')
-            if it.get("summary"):
-                lines.append(f"   ↳ {html.escape(it['summary'])}")
+            if it.get("what"):
+                lines.append(f"   📝 {html.escape(it['what'])}")
+            if it.get("why"):
+                lines.append(f"   🔥 {html.escape(it['why'])}")
     if today.weekday() == 0:
         lines.append('\n📊 <b>Thứ Hai: xem bảng xếp hạng model</b>\n• <a href="https://arena.ai/leaderboard">arena.ai/leaderboard</a> (bảng chính thức, thay đổi hằng tuần)')
     if errors:
@@ -404,7 +450,9 @@ def main():
     if not DRY_RUN:
         for items in picked.values():
             for it in items:
-                state[it["url"]] = int(NOW)
+                # tin dư chưa hiển thị thì để dành cho hôm sau
+                if it.get("shown") or it.get("keep") is False:
+                    state[it["url"]] = int(NOW)
         save_state(state)
 
 
