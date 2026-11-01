@@ -406,9 +406,9 @@ def render(picked, errors):
             meta = " · ".join(x for x in (it["note"], it["source"]) if x)
             lines.append(f'• <a href="{html.escape(it["url"])}">{html.escape(it["title"])}</a> <i>({html.escape(meta)})</i>')
             if it.get("what"):
-                lines.append(f"   📝 {html.escape(it['what'])}")
+                lines.append(f"   📝 <b>Là gì:</b> {html.escape(it['what'])}")
             if it.get("why"):
-                lines.append(f"   🔥 {html.escape(it['why'])}")
+                lines.append(f"   🔥 <b>Vì sao hot:</b> {html.escape(it['why'])}")
     if today.weekday() == 0:
         lines.append('\n📊 <b>Thứ Hai: xem bảng xếp hạng model</b>\n• <a href="https://arena.ai/leaderboard">arena.ai/leaderboard</a> (bảng chính thức, thay đổi hằng tuần)')
     if errors:
