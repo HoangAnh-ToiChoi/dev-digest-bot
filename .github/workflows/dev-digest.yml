@@ -2,7 +2,11 @@ name: Dev Digest to Telegram
 
 on:
   schedule:
-    - cron: "0 1 * * *"   # 01:00 UTC = 8:00 sáng giờ Việt Nam (GitHub có thể chạy trễ 5–30 phút)
+    # Giờ UTC = giờ Việt Nam - 7. GitHub hay bỏ lỡ lịch đặt đúng giờ chẵn (:00) và có thể chạy trễ,
+    # nên đặt lệch phút và thêm 2 mốc dự phòng; mốc nào chạy trước thì gửi, các mốc sau tự bỏ qua.
+    - cron: "43 0 * * *"  # 7:43 sáng VN → thường tới khoảng 8h
+    - cron: "23 1 * * *"  # 8:23 dự phòng
+    - cron: "7 2 * * *"   # 9:07 dự phòng
   workflow_dispatch:       # bấm chạy tay trong tab Actions để test
 
 permissions:

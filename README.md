@@ -82,10 +82,10 @@ Mọi thứ nằm ở đầu file `dev_digest.py`:
 - `WATCH_REPOS`: các framework cần theo dõi. Mặc định theo stack của SchoolarsGo: React, Vite, Tailwind, Express, Supabase, Node, Playwright, Zod, TanStack Query, cùng Next.js, Bun và Claude Code.
 - `MODEL_FEEDS`, `WORKFLOW_FEEDS`: thêm hoặc bớt nguồn RSS.
 - `SECTIONS`: đổi số tin tối đa của từng mục.
-- Giờ gửi: sửa `cron` trong `.github/workflows/dev-digest.yml`. Giờ ở đây là UTC, tức giờ Việt Nam trừ 7.
+- Giờ gửi: sửa các dòng `cron` trong `.github/workflows/dev-digest.yml`. Giờ ở đây là UTC, tức giờ Việt Nam trừ 7. Có 3 mốc: 7:43, 8:23 và 9:07. Mốc nào chạy được trước thì gửi bản tin, các mốc sau tự bỏ qua, vì GitHub đôi khi bỏ lỡ lịch.
 
 ## Lưu ý
 
-- GitHub có thể chạy trễ 5–30 phút vào giờ cao điểm.
+- GitHub có thể chạy trễ hoặc bỏ lỡ một lần chạy theo lịch, nhất là với repo mới tạo. Vì vậy bot có 2 mốc dự phòng. Nếu cả 3 mốc đều không chạy, bạn có thể vào tab Actions và bấm **Run workflow**.
 - Anthropic không có RSS chính thức. Tin về Claude chủ yếu sẽ đến từ Hacker News và GitHub.
 - Bot commit `state/sent.json` mỗi ngày, nên repo luôn có hoạt động. Nhờ vậy, GitHub không tự tắt lịch chạy sau 60 ngày.

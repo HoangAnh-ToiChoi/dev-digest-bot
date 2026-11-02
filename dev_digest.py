@@ -525,8 +525,21 @@ def send(text):
         sys.exit(f"Telegram lỗi {r.status_code}: {r.text}")
 
 
+LAST_DIGEST_KEY = "__last_digest__"
+
+
+def already_sent_today(state):
+    last = state.get(LAST_DIGEST_KEY)
+    return bool(last) and datetime.fromtimestamp(last, VN_TZ).date() == datetime.now(VN_TZ).date()
+
+
 def main():
     state = load_state()
+    # Lịch chạy có nhiều mốc dự phòng (GitHub hay bỏ lỡ lịch); mốc nào chạy trước thì gửi,
+    # các mốc sau trong ngày bỏ qua. Bấm "Run workflow" bằng tay thì luôn gửi.
+    if os.environ.get("GITHUB_EVENT_NAME") == "schedule" and already_sent_today(state):
+        print("Hôm nay đã gửi bản tin, bỏ qua lần chạy dự phòng.")
+        return
     picked, errors = collect(state)
     summary_error = summarize(picked)
     if summary_error:
@@ -539,6 +552,7 @@ def main():
                 # tin dư chưa hiển thị thì để dành cho hôm sau
                 if it.get("shown") or it.get("keep") is False:
                     state[it["url"]] = int(NOW)
+        state[LAST_DIGEST_KEY] = int(NOW)
         save_state(state)
 
 
