@@ -390,8 +390,12 @@ def ask_gemini(prompt):
     models = [os.environ.get("GEMINI_MODEL")] if os.environ.get("GEMINI_MODEL") else []
     models += [m for m in GEMINI_FALLBACK_MODELS if m not in models]
     reason = "không rõ"
+    # Giới hạn tổng thời gian để Gemini chậm không làm trễ (hoặc làm hỏng) cả bản tin
+    deadline = time.time() + 240
     for model in models:
         for wait in (0, 10, 30):
+            if time.time() + wait > deadline:
+                return None, f"{reason}, hết thời gian chờ"
             time.sleep(wait)
             try:
                 r = requests.post(
@@ -402,7 +406,7 @@ def ask_gemini(prompt):
                         "generationConfig": {"responseMimeType": "application/json",
                                              "responseSchema": GEMINI_SCHEMA},
                     },
-                    timeout=180,
+                    timeout=60,
                 )
             except requests.RequestException as e:
                 reason = f"không kết nối được ({e.__class__.__name__})"

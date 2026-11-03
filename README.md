@@ -89,3 +89,22 @@ Mọi thứ nằm ở đầu file `dev_digest.py`:
 - GitHub có thể chạy trễ hoặc bỏ lỡ một lần chạy theo lịch, nhất là với repo mới tạo. Vì vậy bot có 2 mốc dự phòng. Nếu cả 3 mốc đều không chạy, bạn có thể vào tab Actions và bấm **Run workflow**.
 - Anthropic không có RSS chính thức. Tin về Claude chủ yếu sẽ đến từ Hacker News và GitHub.
 - Bot commit `state/sent.json` mỗi ngày, nên repo luôn có hoạt động. Nhờ vậy, GitHub không tự tắt lịch chạy sau 60 ngày.
+
+## Gửi đúng 8h bằng cron-job.org (khuyên dùng)
+
+Lịch chạy của GitHub Actions có thể **trễ vài tiếng**. Ví dụ ngày 03/11 lịch 7:43 nhưng 14:12 mới chạy. Để gửi đúng giờ, dùng dịch vụ miễn phí cron-job.org gọi GitHub chạy bot.
+
+1. **Tạo token GitHub:** vào https://github.com/settings/personal-access-tokens/new
+   - Repository access: **Only select repositories**, chọn `dev-digest-bot`.
+   - Permissions → Repository permissions → **Actions: Read and write**.
+   - Bấm **Generate token** rồi copy token.
+2. **Tạo tài khoản** tại https://cron-job.org, rồi bấm **Create cronjob**:
+   - URL: `https://api.github.com/repos/HoangAnh-ToiChoi/dev-digest-bot/actions/workflows/dev-digest.yml/dispatches`
+   - Schedule: mỗi ngày lúc **07:50**, múi giờ **Asia/Ho_Chi_Minh**.
+   - Tab **Advanced**:
+     - Request method: **POST**
+     - Headers: `Authorization: Bearer <token vừa tạo>`, `Accept: application/vnd.github+json` và `Content-Type: application/json`
+     - Request body: `{"ref":"main"}`
+3. Bấm **Test run**. Nếu kết quả là `204` là đã gọi được GitHub, và bot sẽ gửi tin.
+
+Các lịch của GitHub vẫn được giữ làm dự phòng. Nếu bản tin trong ngày đã được gửi, các lần chạy theo lịch sau đó sẽ tự bỏ qua.
