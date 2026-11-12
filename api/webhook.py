@@ -125,7 +125,12 @@ def handle_update(update, secret_header):
     msg = update.get("message") or {}
     chat_id = str((msg.get("chat") or {}).get("id", ""))
     text = (msg.get("text") or "").strip()
-    if not text or chat_id != os.environ.get("TELEGRAM_CHAT_ID", ""):
+    allowed = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+    if not text:
+        return 200
+    if chat_id != allowed:
+        state = "chưa được đặt" if not allowed else "khác số này"
+        print(f"Bỏ qua tin từ chat {chat_id}: TELEGRAM_CHAT_ID trên Vercel {state}", file=sys.stderr)
         return 200
     try:
         if text.startswith("/start"):
