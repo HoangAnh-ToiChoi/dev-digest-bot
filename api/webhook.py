@@ -18,7 +18,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-from http.server import BaseHTTPRequestHandler
+from http import HTTPStatus
 
 UA = {"User-Agent": "dev-digest-bot"}
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent"
@@ -142,20 +142,15 @@ def handle_update(update, secret_header):
     return 200
 
 
-class handler(BaseHTTPRequestHandler):
-    def _status(self, code, body=b"ok"):
-        self.send_response(code)
-        self.send_header("Content-Type", "text/plain")
-        self.end_headers()
-        self.wfile.write(body)
-
-    def do_GET(self):
-        self._status(200)
-
-    def do_POST(self):
+def app(environ, start_response):
+    """Điểm vào WSGI cho Vercel (khai báo trong pyproject.toml)."""
+    code = 200
+    if environ["REQUEST_METHOD"] == "POST":
         try:
-            length = int(self.headers.get("Content-Length") or 0)
-            update = json.loads(self.rfile.read(length) or b"{}")
+            length = int(environ.get("CONTENT_LENGTH") or 0)
+            update = json.loads(environ["wsgi.input"].read(length) or b"{}")
+            code = handle_update(update, environ.get("HTTP_X_TELEGRAM_BOT_API_SECRET_TOKEN"))
         except (ValueError, OSError):
-            return self._status(400, b"bad request")
-        self._status(handle_update(update, self.headers.get("X-Telegram-Bot-Api-Secret-Token")))
+            code = 400
+    start_response(f"{code} {HTTPStatus(code).phrase}", [("Content-Type", "text/plain")])
+    return [b"ok"]
