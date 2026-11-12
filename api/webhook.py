@@ -15,6 +15,7 @@ import hmac
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -35,27 +36,44 @@ def http_json(url, data=None, headers=None, timeout=15):
         return json.loads(r.read())
 
 
+RETRY_CODES = (429, 500, 503)
+GEMINI_BUDGET_SECONDS = 35  # tổng thời gian chờ Gemini, để Telegram không gửi lại tin
+
+
 def gemini(prompt, as_json=False):
-    """Gọi Gemini, thử model dự phòng một lần nếu lỗi. Không chờ lâu vì webhook có giới hạn thời gian."""
-    models = [os.environ.get("GEMINI_MODEL") or "gemini-flash-latest", "gemini-flash-lite-latest"]
+    """Gọi Gemini. Gói free hay quá tải (503/429) nên thử lại, rồi chuyển model dự phòng."""
+    models = []
+    for m in (os.environ.get("GEMINI_MODEL"), "gemini-flash-latest",
+              "gemini-flash-lite-latest", "gemini-3.1-flash-lite"):
+        if m and m not in models:
+            models.append(m)
     config = {"responseMimeType": "application/json"} if as_json else {}
-    last = None
+    errors = []
+    deadline = time.time() + GEMINI_BUDGET_SECONDS
     for model in models:
-        try:
-            data = http_json(
-                GEMINI_URL.format(model),
-                {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": config},
-                {"x-goog-api-key": os.environ["GEMINI_API_KEY"]},
-                timeout=20,
-            )
-            cand = data["candidates"][0]
-            if cand.get("finishReason") != "STOP":
-                last = f"{model}: finishReason={cand.get('finishReason')}"
-                continue
-            return "".join(p.get("text", "") for p in cand["content"]["parts"])
-        except (OSError, KeyError, IndexError, ValueError) as e:
-            last = f"{model}: {e.__class__.__name__}: {e}"
-    raise RuntimeError(f"Gemini lỗi ({last})")
+        for wait in (0, 3):
+            if time.time() + wait > deadline:
+                break
+            time.sleep(wait)
+            try:
+                data = http_json(
+                    GEMINI_URL.format(model),
+                    {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": config},
+                    {"x-goog-api-key": os.environ["GEMINI_API_KEY"]},
+                    timeout=12,
+                )
+                cand = data["candidates"][0]
+                if cand.get("finishReason") != "STOP":
+                    errors.append(f"{model}: finishReason={cand.get('finishReason')}")
+                    break
+                return "".join(p.get("text", "") for p in cand["content"]["parts"])
+            except urllib.error.HTTPError as e:
+                errors.append(f"{model}: HTTP {e.code}")
+                if e.code not in RETRY_CODES:
+                    break  # key sai, model không tồn tại...: sang model khác
+            except (OSError, KeyError, IndexError, ValueError) as e:
+                errors.append(f"{model}: {e.__class__.__name__}")
+    raise RuntimeError("Gemini lỗi (" + "; ".join(errors) + ")")
 
 
 def extract_keywords(question):
@@ -92,8 +110,24 @@ def search_github(keywords):
     return repos[:MAX_REPOS]
 
 
+def plain_list(repos):
+    lines = ["Gemini đang bận nên mình gửi danh sách thô tìm được trên GitHub (chưa lọc theo chủ đề):"]
+    for r in repos:
+        lines.append(f"\n- {r['name']} (⭐ {r['stars']}, cập nhật {r['updated']})\n"
+                     f"  {r['description'] or '(chưa có mô tả)'}\n  {r['url']}")
+    return "\n".join(lines)
+
+
 def answer(question):
-    keywords = extract_keywords(question)
+    try:
+        keywords = extract_keywords(question)
+    except RuntimeError:
+        # Gemini hỏng: nếu người dùng gõ sẵn từ khoá tiếng Anh ngắn thì dùng luôn
+        words = question.split()
+        if question.isascii() and 1 <= len(words) <= 3:
+            keywords = [w.lower() for w in words if w.replace("-", "").isalnum()][:2]
+        else:
+            raise
     if not keywords:
         return "Mình chưa hiểu bạn muốn tìm skill về chủ đề gì. Bạn nói rõ hơn giúp mình nhé."
     repos = search_github(keywords)
@@ -102,12 +136,17 @@ def answer(question):
     prompt = (
         "Bạn là trợ lý tìm Claude skill. Trả lời bằng tiếng Việt, ngắn gọn, tự nhiên. "
         "CHỈ được nhắc tới các repo trong danh sách dưới đây, không thêm repo nào khác và không bịa chức năng. "
-        "Mỗi repo một mục: tên repo, một câu nói nó làm gì (dựa vào mô tả, mô tả trống thì ghi rõ chưa có mô tả), "
+        "Bỏ qua repo có mô tả không liên quan đến chủ đề người dùng hỏi; nếu không repo nào liên quan thì nói rõ là chưa thấy repo phù hợp. "
+        "Mỗi repo giữ lại gồm một mục: tên repo, một câu nói nó làm gì (dựa vào mô tả, mô tả trống thì ghi rõ chưa có mô tả), "
         "số sao, ngày cập nhật cuối và link. Cuối cùng nhắc người dùng tự đọc README trước khi cài. "
         "Không dùng markdown, chỉ văn bản thường.\n\n"
         f"Câu hỏi: {question}\n\nDanh sách repo (JSON):\n{json.dumps(repos, ensure_ascii=False)}"
     )
-    return gemini(prompt).strip()
+    try:
+        return gemini(prompt).strip()
+    except RuntimeError as e:
+        print(f"Gemini hỏng ở bước trả lời, gửi danh sách thô: {e}", file=sys.stderr)
+        return plain_list(repos)
 
 
 def send(chat_id, text):
