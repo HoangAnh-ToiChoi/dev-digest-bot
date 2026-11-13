@@ -10,7 +10,7 @@ from .github import KIND_LABEL, search
 from .telegram import send
 
 GREETING = ("Chào bạn! Hỏi mình kiểu: 'tìm skill về luật', 'có plugin nào về SEO không' "
-            "hoặc 'MCP server cho database'.")
+            "'MCP server cho database' hoặc 'mcp hay plugin nào về bảo mật'.")
 
 
 def plain_list(repos):
@@ -76,7 +76,11 @@ def handle_update(update, secret_header):
         reply = GREETING if text.startswith("/start") else answer(text)
     except Exception as e:  # noqa: BLE001 - báo lỗi cho người dùng thay vì im lặng
         print(f"Lỗi xử lý: {e.__class__.__name__}: {e}", file=sys.stderr)
-        reply = "Mình gặp lỗi khi tìm, bạn thử lại sau ít phút nhé."
+        if isinstance(e, RuntimeError) and str(e).startswith("Gemini"):
+            reply = ("Gemini đang bận, hết lượt hoặc trả kết quả lạ nên mình chưa đọc được câu hỏi. "
+                     "Bạn thử lại sau ít phút, hoặc gõ thẳng từ khoá tiếng Anh (ví dụ: security nodejs).")
+        else:
+            reply = "Mình gặp lỗi khi tìm, bạn thử lại sau ít phút nhé."
     try:
         send(chat_id, reply)
     except OSError as e:
