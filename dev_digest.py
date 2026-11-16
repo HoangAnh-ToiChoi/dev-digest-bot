@@ -24,12 +24,17 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import feedparser
 import requests
 
+import trending
+
 DRY_RUN = os.environ.get("DRY_RUN") == "1"
 STATE_FILE = Path(__file__).parent / "state" / "sent.json"
 STATE_KEEP_DAYS = 30
 VN_TZ = timezone(timedelta(hours=7))
 NOW = time.time()
 UA = {"User-Agent": "dev-digest-bot/1.0"}
+TOPREPO_UA = {"User-Agent": "dev-digest-bot/1.0 (+https://github.com/HoangAnh-ToiChoi/dev-digest-bot)"}
+# Số sao hôm nay của các repo ứng viên mục "Đang nổi"; main() lưu vào state/stars.json sau khi gửi tin
+RISING = {"today": None, "stars": {}, "snapshots": {}}
 
 # Framework/thư viện theo dõi bản phát hành (major/minor, bỏ qua patch).
 # Mặc định theo stack của SchoolarsGo, sửa tuỳ ý.
@@ -74,6 +79,7 @@ WORKFLOW_WORDS = re.compile(
 # (khoá, tiêu đề, số bài tối đa)
 SECTIONS = [
     ("repos", "🔥 REPO HOT (GitHub, tạo trong 7 ngày)", 5),
+    ("rising", "🚀 ĐANG NỔI (tăng sao nhiều nhất; gợi ý repo từ toprepo.cuongit.net)", 5),
     ("skills", "🧩 CLAUDE SKILL MỚI", 3),
     ("models", "🧠 MODEL / RELEASE AI (nguồn chính thức)", 4),
     ("workflow", "🛠️ CÁCH DÙNG AI / WORKFLOW", 3),
@@ -140,6 +146,78 @@ def fetch_repos(_hours):
 
 def fetch_skills(_hours):
     return search_repos("claude skill in:name,description,topics", "GitHub")
+
+
+def fetch_rising(_hours):
+    """Repo tăng sao nhanh nhất, kể cả repo cũ. Mức tăng tính từ state/stars.json (lưu mỗi sáng)."""
+    today = datetime.now(VN_TZ).date()
+    soft, repos = [], {}
+    for topic in trending.TOPICS:
+        try:
+            data = gh_get("/search/repositories", q=f"topic:{topic}", sort="stars", order="desc",
+                          per_page=trending.TOPIC_LIMIT)
+        except requests.RequestException as e:
+            soft.append(f"chủ đề {topic}: {e.__class__.__name__}")
+            continue
+        for r in data["items"]:
+            repos[r["full_name"]] = r
+    # Danh sách repo từ toprepo: chỉ lấy tên, số sao lấy lại từ GitHub
+    names = []
+    try:
+        page = requests.get(trending.TOPREPO_URL, headers=TOPREPO_UA, timeout=30)
+        page.raise_for_status()
+        names = trending.parse_toprepo_names(page.text)
+        if not names:
+            soft.append("toprepo: không đọc được danh sách repo (trang có thể đã đổi)")
+    except requests.RequestException as e:
+        soft.append(f"toprepo: {e.__class__.__name__}")
+    by_lower = {name.lower(): name for name in repos}
+    for name in names:
+        if name.lower() in by_lower:
+            continue
+        try:
+            r = gh_get(f"/repos/{name}")
+        except requests.HTTPError as e:
+            if e.response is not None and e.response.status_code in (403, 429):
+                soft.append("GitHub giới hạn lượt gọi, bỏ qua các repo toprepo còn lại")
+                break
+            continue  # 404: repo đã xoá hoặc đổi tên
+        except requests.RequestException:
+            continue
+        repos[r["full_name"]] = r
+        by_lower[r["full_name"].lower()] = r["full_name"]
+    if not repos:
+        raise RuntimeError("không lấy được repo ứng viên nào")
+
+    stars_now = {n: r["stargazers_count"] for n, r in repos.items() if not looks_star_farmed(r)}
+    snapshots = trending.load_snapshots()
+    RISING.update(today=today, stars=stars_now, snapshots=snapshots)
+    rows = trending.rank_rising(stars_now, snapshots, today)
+    if not rows and not trending.has_baseline(stars_now, snapshots, today):
+        # Chưa có số sao hôm trước để so sánh (chạy lần đầu): tạm dùng thứ hạng trên toprepo
+        for rank, name in enumerate(names, 1):
+            canon = by_lower.get(name.lower())
+            if canon in stars_now:
+                rows.append({"name": canon, "stars": stars_now[canon], "delta": None, "rank": rank})
+        rows = rows[:10]
+
+    out = []
+    for row in rows:
+        r = repos[row["name"]]
+        desc = (r.get("description") or "").strip()
+        if row["delta"] is None:
+            note = f"⭐ {row['stars']:,} · hạng #{row['rank']} trên toprepo (đang thu thập số sao, mai mới có mức tăng)"
+            growth = f"đứng hạng #{row['rank']} trên bảng xếp hạng toprepo.cuongit.net"
+        else:
+            note = f"⭐ {row['stars']:,} · +{row['rate']:,.0f} sao/ngày"
+            span = "so với hôm qua" if row["days"] == 1 else f"trong {row['days']} ngày"
+            growth = f"tăng {row['delta']:+,} sao {span}"
+        owner = "tổ chức" if r["owner"].get("type") == "Organization" else "cá nhân"
+        context = (f"Repo GitHub của {owner} {r['owner']['login']}, tạo ngày {r['created_at'][:10]}, "
+                   f"{row['stars']} sao ({growth}), {r['forks_count']} fork. Mô tả: {desc}")
+        title = f"{r['full_name']} – {desc[:100]}{'…' if len(desc) > 100 else ''}" if desc else r["full_name"]
+        out.append(item(title, r["html_url"], "GitHub", note, context, ("repo", r["full_name"])))
+    return out, soft
 
 
 def entry_time(e):
@@ -251,6 +329,7 @@ def fetch_industry(hours):
 
 FETCHERS = {
     "repos": fetch_repos,
+    "rising": fetch_rising,
     "skills": fetch_skills,
     "models": fetch_models,
     "workflow": fetch_workflow,
@@ -296,7 +375,7 @@ def collect(sent):
                         it["note"] = (it["note"] + " · " if it["note"] else "") + "tin 2 ngày"
                     chosen.append(it)
                     seen.add(it["url"])
-            if len(chosen) >= limit or key in ("repos", "skills"):
+            if len(chosen) >= limit or key in ("repos", "skills", "rising"):
                 errors += [f"{key}: {s}" for s in soft_errors]
                 break
         picked[key] = chosen
@@ -558,6 +637,9 @@ def main():
                     state[it["url"]] = int(NOW)
         state[LAST_DIGEST_KEY] = int(NOW)
         save_state(state)
+        if RISING["today"]:
+            trending.save_snapshots(
+                trending.with_today(RISING["snapshots"], RISING["today"], RISING["stars"]), RISING["today"])
 
 
 if __name__ == "__main__":

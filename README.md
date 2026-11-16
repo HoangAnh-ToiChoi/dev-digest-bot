@@ -5,6 +5,7 @@ Mỗi sáng 8h, bot gửi một tin tổng hợp về Telegram, gồm 6 mục:
 | Mục | Số tin tối đa | Nguồn |
 |---|---|---|
 | 🔥 Repo hot | 5 | GitHub Search API: repo tạo trong 7 ngày, nhiều sao |
+| 🚀 Đang nổi | 5 | Repo tăng sao nhanh nhất mỗi ngày, kể cả repo cũ. Ứng viên lấy từ các chủ đề `claude-code`, `claude-skills`, `agent-skills`, `mcp` trên GitHub và danh sách repo của [toprepo.cuongit.net](https://toprepo.cuongit.net) (chỉ lấy tên repo, mỗi ngày đọc một lần) |
 | 🧩 Claude skill mới | 3 | GitHub Search API: repo có "claude skill" |
 | 🧠 Model / release AI | 4 | RSS chính thức (OpenAI, Google, DeepMind, Hugging Face) và model trending trên Hugging Face |
 | 🛠️ Cách dùng AI / workflow | 3 | Simon Willison, Latent Space |
@@ -14,6 +15,15 @@ Mỗi sáng 8h, bot gửi một tin tổng hợp về Telegram, gồm 6 mục:
 Mỗi sáng thứ Hai, bot gửi thêm link bảng xếp hạng model [arena.ai](https://arena.ai/leaderboard).
 
 Mỗi tin có link bấm vào là tới thẳng trang gốc.
+
+## Mục "Đang nổi" hoạt động thế nào
+
+GitHub không cho biết một repo tăng bao nhiêu sao mỗi ngày, nên mỗi sáng bot lưu số sao của các repo ứng viên vào `state/stars.json` (giữ 35 ngày), sáng hôm sau trừ ra để có mức tăng. Số sao luôn lấy từ GitHub, không dựa vào số liệu của trang khác.
+
+- **Lần chạy đầu chưa có số sao hôm trước**, nên mục này tạm xếp theo thứ hạng trên toprepo; từ ngày thứ hai mới có mức "+N sao/ngày".
+- Chỉ lấy repo tăng từ 50 sao/ngày trở lên. Repo đã xuất hiện trong bản tin thì không lặp lại trong 30 ngày, giống các mục khác.
+- Bị GitHub giới hạn lượt gọi hoặc toprepo đổi giao diện thì mục này ghi vào dòng "Nguồn lỗi hôm nay", các mục khác vẫn gửi bình thường.
+- Chạy kiểm thử: `pip install -r requirements.txt && python -m unittest discover -s tests`
 
 ## Cách bot tránh sót tin và tin sai
 
